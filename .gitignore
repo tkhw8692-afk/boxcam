@@ -1,0 +1,8 @@
+# dev/test artifacts (not part of the deployed app)
+server.py
+_test_reed.jpg
+_render.png
+_render.jpg
+__pycache__/
+.claude/
+.DS_Store

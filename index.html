@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#0a0d10" />
+  <title>VISION ∙ tracking filter</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- 메인 스테이지: 카메라/사진을 그리는 캔버스 -->
+  <main id="stage">
+    <!-- 영상 소스 (숨김). 캔버스에 매 프레임 그려서 합성/녹화 -->
+    <video id="video" playsinline muted autoplay></video>
+    <!-- 업로드한 사진 소스 (숨김) -->
+    <img id="photo" alt="" />
+    <!-- 실제로 보이는 합성 캔버스 -->
+    <canvas id="canvas"></canvas>
+
+    <!-- HUD 상단 상태 표시 -->
+    <div id="hud" class="hud">
+      <span class="hud-dot"></span>
+      <span id="hud-text">VISION&nbsp;//&nbsp;standby</span>
+    </div>
+
+    <!-- 시작 오버레이 (iOS 제스처 요구 대응) -->
+    <div id="startScreen" class="overlay">
+      <div class="overlay-inner">
+        <div class="logo">▣ VISION</div>
+        <p class="tagline">on-device tracking overlay</p>
+        <button id="startCam" class="btn btn-primary">카메라 시작</button>
+        <button id="startPhoto" class="btn btn-ghost">사진 업로드</button>
+        <p id="envWarn" class="warn" hidden></p>
+      </div>
+    </div>
+
+    <!-- 권한 거부/에러 안내 -->
+    <div id="errScreen" class="overlay" hidden>
+      <div class="overlay-inner">
+        <div class="logo err">⚠ NO SIGNAL</div>
+        <p id="errMsg" class="tagline"></p>
+        <button id="errPhoto" class="btn btn-ghost">사진 업로드로 전환</button>
+        <button id="errRetry" class="btn btn-primary">다시 시도</button>
+      </div>
+    </div>
+  </main>
+
+  <!-- 하단 컨트롤 바 -->
+  <div id="controls" class="controls" hidden>
+    <button id="btnPanel" class="ctrl-btn" title="설정">⚙</button>
+    <button id="btnSwitch" class="ctrl-btn" title="모드 전환">⇄</button>
+    <button id="btnRecord" class="ctrl-btn rec" title="녹화">●</button>
+    <button id="btnShot" class="ctrl-btn" title="사진 저장">▢</button>
+    <input id="fileInput" type="file" accept="image/*" hidden />
+  </div>
+
+  <!-- 설정 패널 -->
+  <div id="panel" class="panel" hidden>
+    <div class="panel-row">
+      <label>박스 밀도</label>
+      <input id="density" type="range" min="10" max="120" value="48" />
+    </div>
+    <div class="panel-row">
+      <label>움직임 민감도</label>
+      <input id="sensitivity" type="range" min="0" max="100" value="55" />
+    </div>
+    <div class="panel-row">
+      <label>색</label>
+      <div class="swatches" id="swatches">
+        <button class="sw" data-color="white" style="--c:#dfe8ec"></button>
+        <button class="sw" data-color="cyan" style="--c:#46e6ff"></button>
+        <button class="sw" data-color="green" style="--c:#5cff9d"></button>
+        <button class="sw" data-color="amber" style="--c:#ffcf6b"></button>
+      </div>
+    </div>
+    <div class="panel-row">
+      <label>연결선</label>
+      <input id="lines" type="checkbox" checked />
+    </div>
+    <div class="panel-row">
+      <label>스캔라인</label>
+      <input id="scanline" type="checkbox" checked />
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
