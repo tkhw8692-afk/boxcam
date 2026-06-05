@@ -166,6 +166,12 @@ html, body {
 }
 .ctrl-btn:active { transform: scale(0.92); }
 .ctrl-btn.rec { color: var(--err); }
+.ctrl-btn.active {
+  background: #f1f4f6;
+  color: #0a0d10;
+  border-color: #f1f4f6;
+}
+.ctrl-btn.loading { animation: blink 1s infinite; }
 .ctrl-btn.recording {
   background: var(--err);
   color: #fff;

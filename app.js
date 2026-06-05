@@ -42,6 +42,7 @@ const state = {
   sensitivity: 0.55,       // Phase 2 모션 가중치 (지금은 드리프트 강도에 사용)
   showLines: true,
   showScan: true,
+  faceMode: false,         // 얼굴 정밀 추적 (MediaPipe) on/off
 };
 
 function lerp(a, b, t) { return a + (b - a) * t; }
@@ -229,7 +230,7 @@ function updateBoxes(dt, t) {
       const cen = localMotionCentroid(b.x + b.w / 2, b.y + b.h / 2, 2);
       if (cen) {
         b.starve = 0;
-        const k = Math.min(1, dt * 7) * 0.6;
+        const k = Math.min(1, dt * 22);          // 빠릿하게 달라붙음 (덜 끈적)
         b.x += ((cen.x - b.w / 2) - b.x) * k;
         b.y += ((cen.y - b.h / 2) - b.y) * k;
       } else {
@@ -238,7 +239,7 @@ function updateBoxes(dt, t) {
     }
 
     const oob = b.x < -0.12 || b.x > 1.06 || b.y < -0.06 || b.y > 1.06;
-    const starved = motionMode && b.starve > 0.5;
+    const starved = motionMode && b.starve > 0.3;
     if (b.age >= b.life || starved || oob) {
       boxes.splice(i, 1);
     }
@@ -367,6 +368,142 @@ function drawScan(t) {
   ctx.fillRect(0, y - ch * 0.06, cw, ch * 0.12);
 }
 
+/* =====================================================================
+   얼굴 모드 (Phase 4) — MediaPipe Face Landmarker (478점)
+   눈/코/입/눈썹에 박스, 턱선·얼굴 윤곽선, 페이스메시 점.
+   모델은 토글 켤 때 지연 로드 (수 MB 다운로드).
+   ===================================================================== */
+let faceLandmarker = null;
+let faceReady = false, faceLoading = false;
+let faceLatest = null, faceLost = 0;
+let faceFeatures = null, faceOval = null;
+
+const FACE_CDN = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
+const FACE_MODEL = 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task';
+
+async function ensureFace() {
+  if (faceReady || faceLoading) return;
+  faceLoading = true;
+  $('btnFace').classList.add('loading');
+  setHud('FACE // 모델 로딩…');
+  try {
+    const vision = await import(FACE_CDN + '/+esm');
+    const { FaceLandmarker, FilesetResolver } = vision;
+    const fileset = await FilesetResolver.forVisionTasks(FACE_CDN + '/wasm');
+    faceLandmarker = await FaceLandmarker.createFromOptions(fileset, {
+      baseOptions: { modelAssetPath: FACE_MODEL, delegate: 'GPU' },
+      runningMode: 'VIDEO',
+      numFaces: 1,
+    });
+    const uniq = (conns) => { const s = new Set(); conns.forEach((c) => { s.add(c.start); s.add(c.end); }); return [...s]; };
+    faceFeatures = [
+      { tag: 'EYE_L', idx: uniq(FaceLandmarker.FACE_LANDMARKS_LEFT_EYE),  id: nextId() },
+      { tag: 'EYE_R', idx: uniq(FaceLandmarker.FACE_LANDMARKS_RIGHT_EYE), id: nextId() },
+      { tag: 'BROW_L', idx: uniq(FaceLandmarker.FACE_LANDMARKS_LEFT_EYEBROW),  id: nextId() },
+      { tag: 'BROW_R', idx: uniq(FaceLandmarker.FACE_LANDMARKS_RIGHT_EYEBROW), id: nextId() },
+      { tag: 'MOUTH', idx: uniq(FaceLandmarker.FACE_LANDMARKS_LIPS), id: nextId() },
+      { tag: 'NOSE', idx: [1, 2, 98, 327, 5, 4, 6, 197, 195, 168, 45, 275], id: nextId() },
+    ];
+    faceOval = FaceLandmarker.FACE_LANDMARKS_FACE_OVAL;
+    faceReady = true;
+    setHud('FACE // tracking');
+  } catch (e) {
+    flash('얼굴 모델 로드 실패 — 네트워크 확인');
+    state.faceMode = false;
+    $('btnFace').classList.remove('active');
+  } finally {
+    faceLoading = false;
+    $('btnFace').classList.remove('loading');
+  }
+}
+
+function detectFace(ts) {
+  try {
+    const res = faceLandmarker.detectForVideo(video, ts);
+    const lm = res && res.faceLandmarks && res.faceLandmarks[0];
+    if (lm) { faceLatest = lm; faceLost = 0; }
+    else if (++faceLost > 8) { faceLatest = null; }
+  } catch (e) { /* 일시적 오류 무시 */ }
+}
+
+// 랜드마크(영상 정규화 좌표) → 캔버스 픽셀 (cover + mirror 반영)
+function mapLandmark(lx, ly) {
+  const cw = canvas.width, ch = canvas.height;
+  const sw = state.srcW, sh = state.srcH;
+  const scale = Math.max(cw / sw, ch / sh);
+  const dw = sw * scale, dh = sh * scale, dx = (cw - dw) / 2, dy = (ch - dh) / 2;
+  let x = dx + lx * dw;
+  const y = dy + ly * dh;
+  if (state.mirror) x = cw - x;
+  return [x, y];
+}
+
+function drawFace(lm) {
+  const cw = canvas.width;
+  const [r, g, b] = state.color;
+  const col = (a) => `rgba(${r},${g},${b},${a})`;
+
+  // 1) 페이스메시 점들 (옅게)
+  ctx.fillStyle = col(0.22);
+  for (let i = 0; i < lm.length; i++) {
+    const [x, y] = mapLandmark(lm[i].x, lm[i].y);
+    ctx.fillRect(x - 0.6, y - 0.6, 1.5, 1.5);
+  }
+
+  // 2) 얼굴 윤곽선(턱선 포함)
+  ctx.strokeStyle = col(0.5);
+  ctx.lineWidth = Math.max(1.3, cw / 680);
+  ctx.beginPath();
+  for (const c of faceOval) {
+    const [ax, ay] = mapLandmark(lm[c.start].x, lm[c.start].y);
+    const [bx, by] = mapLandmark(lm[c.end].x, lm[c.end].y);
+    ctx.moveTo(ax, ay); ctx.lineTo(bx, by);
+  }
+  ctx.stroke();
+
+  // 3) 이목구비 박스 + 라벨
+  ctx.lineWidth = Math.max(1.6, cw / 560);
+  ctx.font = `${Math.round(cw / 92)}px ui-monospace, monospace`;
+  ctx.textBaseline = 'bottom';
+  const centers = [];
+  for (const f of faceFeatures) {
+    let minx = 1e9, miny = 1e9, maxx = -1e9, maxy = -1e9;
+    for (const i of f.idx) {
+      const [x, y] = mapLandmark(lm[i].x, lm[i].y);
+      if (x < minx) minx = x; if (y < miny) miny = y;
+      if (x > maxx) maxx = x; if (y > maxy) maxy = y;
+    }
+    const pad = Math.max(3, cw / 130);
+    minx -= pad; miny -= pad; maxx += pad; maxy += pad;
+    const w = maxx - minx, h = maxy - miny;
+    ctx.strokeStyle = col(0.66);
+    ctx.strokeRect(minx, miny, w, h);
+    // 코너틱
+    const tick = Math.min(w, h) * 0.22;
+    ctx.beginPath();
+    ctx.moveTo(minx, miny + tick); ctx.lineTo(minx, miny); ctx.lineTo(minx + tick, miny);
+    ctx.moveTo(maxx - tick, miny); ctx.lineTo(maxx, miny); ctx.lineTo(maxx, miny + tick);
+    ctx.stroke();
+    ctx.fillStyle = col(0.85);
+    ctx.fillText(`${f.id} ${f.tag}`, minx + 1, miny - 2);
+    centers.push([minx + w / 2, miny + h / 2]);
+  }
+
+  // 4) 이목구비 박스끼리 연결선
+  if (state.showLines) {
+    ctx.strokeStyle = col(0.26);
+    ctx.lineWidth = Math.max(1, cw / 900);
+    ctx.beginPath();
+    for (let i = 0; i < centers.length; i++) {
+      for (let j = i + 1; j < centers.length; j++) {
+        ctx.moveTo(centers[i][0], centers[i][1]);
+        ctx.lineTo(centers[j][0], centers[j][1]);
+      }
+    }
+    ctx.stroke();
+  }
+}
+
 /* ---------- 메인 루프 ---------- */
 let lastT = 0;
 function loop(ts) {
@@ -375,19 +512,30 @@ function loop(ts) {
   const dt = Math.min(0.05, t - lastT || 0.016);
   lastT = t;
 
-  // 소스 크기 갱신
   if (state.mode === 'camera' && video.videoWidth) {
     state.srcW = video.videoWidth; state.srcH = video.videoHeight;
+  }
+
+  const faceActive = state.faceMode && faceReady && state.mode === 'camera' && video.videoWidth;
+
+  if (faceActive) {
+    detectFace(ts);
+    if (!faceLatest) updateMotion();          // 얼굴 못 찾으면 모션으로 폴백
+  } else if (state.mode === 'camera' && video.videoWidth) {
     updateMotion();
   }
 
-  updateBoxes(dt, t);
-
   drawSourceCover();
-  drawLines(t);
-  drawBoxes(t);
-  drawScan(t);
 
+  if (faceActive && faceLatest) {
+    drawFace(faceLatest);
+  } else {
+    updateBoxes(dt, t);
+    drawLines(t);
+    drawBoxes(t);
+  }
+
+  drawScan(t);
   requestAnimationFrame(loop);
 }
 
@@ -564,6 +712,18 @@ $('btnSwitch').addEventListener('click', () => {
   startCamera();
 });
 $('btnPanel').addEventListener('click', () => { panel.hidden = !panel.hidden; });
+$('btnFace').addEventListener('click', async () => {
+  if (state.mode !== 'camera') { flash('얼굴 모드는 카메라에서 동작해요'); return; }
+  state.faceMode = !state.faceMode;
+  $('btnFace').classList.toggle('active', state.faceMode);
+  if (state.faceMode) {
+    boxes.length = 0;          // 모션 박스 정리
+    faceLatest = null; faceLost = 0;
+    await ensureFace();
+  } else {
+    setHud('LIVE // tracking');
+  }
+});
 
 /* ---------- 패널 컨트롤 ---------- */
 $('density').addEventListener('input', (e) => { state.density = +e.target.value; });
